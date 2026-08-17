@@ -4,14 +4,14 @@ PortSystem      1.0
 PortGroup       github 1.0
 PortGroup       legacysupport 1.1
 
-github.setup    tmux tmux 3.6a
+github.setup    tmux tmux 3.7c
 if {${subport} eq ${name}} {
-    revision        0
+    revision        1
     conflicts       tmux-devel
 }
 subport tmux-devel {
-    github.setup    tmux tmux 1bcd360dfe8428a3d8d27777136669efd2a9a667
-    version         20251204-[string range ${github.version} 0 6]
+    github.setup    tmux tmux 6ad86ebdf1ed9f3fa71c2adbf7cb0cf057732609
+    version         20260701-[string range ${github.version} 0 6]
     revision        0
     conflicts       tmux
 }
@@ -40,16 +40,16 @@ configure.args-append \
 
 if {${subport} eq ${name}} {
     github.tarball_from     releases
-    checksums               rmd160  95b1132931370d465e390c220a1a7f878aba4d9f \
-                            sha256  b6d8d9c76585db8ef5fa00d4931902fa4b8cbe8166f528f44fc403961a3f3759 \
-                            size    750698
+    checksums               rmd160  e0b641fc3e61d25fd8345189c6564285b603990c \
+                            sha256  7c60cae9a0e25288e2e24750aafc9e8800fc7fd4555e447e1b29ee4201cfb3bf \
+                            size    789431
 }
 
 subport tmux-devel {
     github.tarball_from     archive
-    checksums               rmd160  54d467a7c4f798d7ccfb3dde2c208f765031c146 \
-                            sha256  f0b43438efcfec9a784df1262eb49a12ac120b3b15b4872ebe8d186a3ec5bc69 \
-                            size    1094871
+    checksums               rmd160  a650dd0b87fe55834537b124c6da381831e758cc \
+                            sha256  866270932f7409bbdd0f750c926f018a0554a6a7b3b930a759b03d72a35a46d9 \
+                            size    1210374
 
     use_autoreconf          yes
     autoreconf.cmd          ./autogen.sh
@@ -61,9 +61,6 @@ subport tmux-devel {
         set reinplace_cmd [subst -nobackslashes -nocommands {s/AC_INIT\(\[tmux\], (next-[0-9]+\.[0-9]+)\)/AC_INIT([tmux], \1 (${version}))/g}]
         reinplace -E $reinplace_cmd ${worksrcpath}/configure.ac
     }
-
-    # https://github.com/tmux/tmux/issues/4119
-    patchfiles-append       patch-devel-gcc4.diff
 }
 
 platform darwin {
@@ -99,6 +96,20 @@ post-destroot {
 
 variant sixel description {Support SIXEL graphics} {
     configure.args-append   --enable-sixel
+}
+
+variant jemalloc description {Use jemalloc instead of the system allocator (works around macOS calloc(3) bug, tmux/tmux#4777)} {
+    depends_lib-append      port:jemalloc
+    configure.args-append   --enable-jemalloc
+}
+
+if {${subport} eq ${name}} {
+    # Only the 3.7c release configure hard-requires an explicit
+    # --enable-jemalloc/--disable-jemalloc; the tmux-devel snapshot's
+    # configure.ac has no such check and treats jemalloc as fully optional.
+    if {![variant_isset jemalloc]} {
+        configure.args-append   --disable-jemalloc
+    }
 }
 
 default_variants-append +sixel
