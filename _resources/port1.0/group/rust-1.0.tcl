@@ -597,6 +597,7 @@ port::register_callback rust::set_environment
 proc rust::rust_pg_callback {} {
     global  subport \
             prefix \
+            configure.rustcache \
             rustcache_dir \
             rustcache_size
 

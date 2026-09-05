@@ -24,8 +24,8 @@ proc evaluate_rustcache_contract {group enabled} {
             proc options {args} {}
             proc default {args} {}
             proc tbool {name} {
-                global $name
-                return [set $name]
+                upvar $name value
+                return [expr {[info exists value] && [string is true -strict $value]}]
             }
             proc option {name} {
                 variable option_values
