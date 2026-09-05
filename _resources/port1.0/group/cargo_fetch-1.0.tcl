@@ -385,7 +385,11 @@ proc rust::rust_pg_callback {} {
 
     # Evaluate this after the Portfile has been read so it can override the
     # global default for configure.rustcache.
-    if {[tbool configure.rustcache]} {
+    set builds_rust_toolchain [expr {
+        ${subport} in {rust cargo sccache}
+        || [string match rust-bootstrap* ${subport}]
+    }]
+    if {[tbool configure.rustcache] && !${builds_rust_toolchain}} {
         depends_build-delete            port:sccache
         depends_build-append            port:sccache
         rust::append_envs               RUSTC_WRAPPER=${prefix}/bin/sccache
