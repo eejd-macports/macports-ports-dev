@@ -52,6 +52,10 @@ jobs:
         env:
             MP_CI_RELEASE: ${{ vars.MP_CI_RELEASE }}
         run: . ports/.github/workflows/bootstrap.sh mpbb
+      - name: Run PortGroup contract tests
+        run: |
+          /opt/local/bin/port-tclsh ports/_resources/port1.0/group/tests/rustcache-1.0.tcl
+          /opt/local/bin/port-tclsh ports/_resources/port1.0/group/tests/muniversal-1.1.tcl
       - name: Determine list of changed ports
         id: portlist
         run: |

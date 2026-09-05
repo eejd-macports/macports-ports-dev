@@ -22,7 +22,10 @@ proc evaluate_rustcache_contract {group enabled {test_subport rustcache-test}} {
             proc unknown {args} {}
             proc PortGroup {args} {}
             proc options {args} {}
-            proc default {args} {}
+            set default_values {}
+            proc default {name args} {
+                dict set ::default_values $name $args
+            }
             proc tbool {name} {
                 upvar $name value
                 return [expr {[info exists value] && [string is true -strict $value]}]
@@ -66,7 +69,8 @@ proc evaluate_rustcache_contract {group enabled {test_subport rustcache-test}} {
             list [expr {[lsearch -exact $build_dependencies port:sccache] >= 0}] \
                 $configure_environment \
                 $build_environment \
-                $destroot_environment
+                $destroot_environment \
+                [dict exists $default_values compwrap.ccache_supported_compilers]
         }
     } finally {
         interp delete $child
@@ -87,20 +91,20 @@ foreach group_name {rust-1.0.tcl cargo_fetch-1.0.tcl} {
         Enabling the global Rust cache after PortGroup loading adds sccache to every build phase.
     } -body {
         evaluate_rustcache_contract $group yes
-    } -result [list 1 $cache_environment $cache_environment $cache_environment]
+    } -result [list 1 $cache_environment $cache_environment $cache_environment 0]
 
     test rustcache-disabled-$group_name {
         A Portfile can disable the global Rust cache after PortGroup loading.
     } -body {
         evaluate_rustcache_contract $group no
-    } -result {0 {} {} {}}
+    } -result {0 {} {} {} 0}
 
     foreach toolchain_subport {rust cargo sccache rust-bootstrap rust-bootstrap-dev} {
         test rustcache-toolchain-$toolchain_subport-$group_name {
             Toolchain and cache ports cannot depend on or run through sccache without creating dependency cycles.
         } -body {
             evaluate_rustcache_contract $group yes $toolchain_subport
-        } -result {0 {} {} {}}
+        } -result {0 {} {} {} 0}
     }
 }
 
