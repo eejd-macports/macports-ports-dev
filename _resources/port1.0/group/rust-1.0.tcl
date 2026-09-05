@@ -555,17 +555,6 @@ proc rust::get_sdkroot {sdk_version} {
     return {}
 }
 
-# Enable sccache for Rust compiler caching when configured globally or by the
-# Portfile. The shared cache is intentionally outside workpath.
-if {[tbool configure.rustcache]} {
-    depends_build-append port:sccache
-    rust::append_envs    RUSTC_WRAPPER=${prefix}/bin/sccache
-    rust::append_envs    SCCACHE_CACHE_SIZE=${rustcache_size}
-    rust::append_envs    SCCACHE_DIR=${rustcache_dir}
-    rust::append_envs    SCCACHE_SERVER_UDS=[file join ${rustcache_dir} sccache.sock]
-    rust::append_envs    CARGO_INCREMENTAL=0
-}
-
 proc rust::set_environment {} {
     global prefix configure.pkg_config_path
     global subport configure.build_arch configure.universal_archs
@@ -608,6 +597,18 @@ port::register_callback rust::set_environment
 proc rust::rust_pg_callback {} {
     global  subport \
             prefix
+
+    # Evaluate this after the Portfile has been read so it can override the
+    # global default for configure.rustcache.
+    if {[tbool configure.rustcache]} {
+        depends_build-delete            port:sccache
+        depends_build-append            port:sccache
+        rust::append_envs               RUSTC_WRAPPER=${prefix}/bin/sccache
+        rust::append_envs               SCCACHE_CACHE_SIZE=${rustcache_size}
+        rust::append_envs               SCCACHE_DIR=${rustcache_dir}
+        rust::append_envs               SCCACHE_SERVER_UDS=[file join ${rustcache_dir} sccache.sock]
+        rust::append_envs               CARGO_INCREMENTAL=0
+    }
 
     if { ${subport} ne "rust" && [join [lrange [split ${subport} -] 0 1] -] ne "rust-bootstrap" } {
         # port is *not* building Rust
