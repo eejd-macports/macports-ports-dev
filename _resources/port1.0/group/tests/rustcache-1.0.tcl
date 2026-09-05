@@ -108,4 +108,8 @@ foreach group_name {rust-1.0.tcl cargo_fetch-1.0.tcl} {
     }
 }
 
+set failed $::tcltest::numTests(Failed)
 cleanupTests
+if {${failed} > 0} {
+    exit 1
+}

@@ -54,4 +54,8 @@ test muniversal-forwards-three-arguments {
     evaluate_supported_arch_forwarding [list {arm64 x86_64} {arm64 x86_64 i386} yes]
 } -result {{arm64 x86_64} {{arm64 x86_64} {arm64 x86_64 i386} yes}}
 
+set failed $::tcltest::numTests(Failed)
 cleanupTests
+if {${failed} > 0} {
+    exit 1
+}
