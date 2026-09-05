@@ -378,7 +378,9 @@ port::register_callback rust::set_environment
 
 proc rust::rust_pg_callback {} {
     global  subport \
-            prefix
+            prefix \
+            rustcache_dir \
+            rustcache_size
 
     # Evaluate this after the Portfile has been read so it can override the
     # global default for configure.rustcache.

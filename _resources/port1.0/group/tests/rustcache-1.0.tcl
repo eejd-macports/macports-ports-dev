@@ -1,0 +1,96 @@
+#!/usr/bin/env tclsh
+# -*- coding: utf-8; mode: tcl; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*- vim:fenc=utf-8:ft=tcl:et:sw=4:ts=4:sts=4
+
+package require tcltest 2
+namespace import tcltest::*
+::tcltest::configure {*}$::argv
+
+set testdir [file dirname [file normalize [info script]]]
+
+proc evaluate_rustcache_contract {group enabled} {
+    set child [interp create]
+    try {
+        $child eval {
+            namespace eval port {
+                proc register_callback {args} {}
+            }
+            namespace eval portconfigure {
+                proc should_add_stdlib {} {}
+                proc should_add_cxx_abi {} {}
+            }
+
+            proc unknown {args} {}
+            proc PortGroup {args} {}
+            proc options {args} {}
+            proc default {args} {}
+            proc tbool {name} {
+                global $name
+                return [set $name]
+            }
+            proc option {name} {
+                variable option_values
+                return [dict get $option_values $name]
+            }
+
+            set build_dependencies {}
+            proc depends_build-delete {value} {}
+            proc depends_build-append {value} {
+                lappend ::build_dependencies $value
+            }
+            foreach phase {configure build destroot} {
+                proc ${phase}.env-delete {value} {}
+                proc ${phase}.env-append {value} "lappend ::${phase}_environment \$value"
+                set ${phase}_environment {}
+            }
+        }
+
+        $child eval [list source $group]
+        $child eval [list set configure.rustcache $enabled]
+        $child eval {
+            set subport rust
+            set prefix /opt/local
+            set rustcache_size 20G
+            set rustcache_dir /var/macports/build/.rustcache
+            set option_values [dict create \
+                openssl.branch {} \
+                os.platform linux \
+                configure.compiler clang \
+                macosx_deployment_target 14.0 \
+                os.major 20 \
+                rust.llvm.legacy 0 \
+                rust.use_cctools 0]
+            rust::rust_pg_callback
+            list $build_dependencies \
+                $configure_environment \
+                $build_environment \
+                $destroot_environment
+        }
+    } finally {
+        interp delete $child
+    }
+}
+
+set cache_environment [list \
+    RUSTC_WRAPPER=/opt/local/bin/sccache \
+    SCCACHE_CACHE_SIZE=20G \
+    SCCACHE_DIR=/var/macports/build/.rustcache \
+    SCCACHE_SERVER_UDS=/var/macports/build/.rustcache/sccache.sock \
+    CARGO_INCREMENTAL=0]
+
+foreach group_name {rust-1.0.tcl cargo_fetch-1.0.tcl} {
+    set group [file join $testdir .. $group_name]
+
+    test rustcache-enabled-$group_name {
+        Enabling the global Rust cache after PortGroup loading adds sccache to every build phase.
+    } -body {
+        evaluate_rustcache_contract $group yes
+    } -result [list {port:sccache} $cache_environment $cache_environment $cache_environment]
+
+    test rustcache-disabled-$group_name {
+        A Portfile can disable the global Rust cache after PortGroup loading.
+    } -body {
+        evaluate_rustcache_contract $group no
+    } -result {{} {} {} {}}
+}
+
+cleanupTests
