@@ -112,7 +112,6 @@ default     triplet.os              {${os.platform}}
 
 # Rust does not easily pass external flags to compilers, so add them to compiler wrappers
 default     compwrap.compilers_to_wrap          {cc cxx ld}
-default     compwrap.ccache_supported_compilers {}
 
 # possible OpenSSL versions: empty, 3, 1.1, and 1.0
 options     openssl.branch
@@ -556,15 +555,16 @@ proc rust::get_sdkroot {sdk_version} {
     return {}
 }
 
-# Is build caching enabled ?
-# WIP for now ...
-#if {[tbool configure.ccache]} {
-#    # Enable sccache for rust caching
-#    depends_build-append port:sccache
-#    rust::append_envs    RUSTC_WRAPPER=${prefix}/bin/sccache
-#    rust::append_envs    SCCACHE_CACHE_SIZE=2G
-#    rust::append_envs    SCCACHE_DIR=${workpath}/.sccache
-#}
+# Enable sccache for Rust compiler caching when configured globally or by the
+# Portfile. The shared cache is intentionally outside workpath.
+if {[tbool configure.rustcache]} {
+    depends_build-append port:sccache
+    rust::append_envs    RUSTC_WRAPPER=${prefix}/bin/sccache
+    rust::append_envs    SCCACHE_CACHE_SIZE=${rustcache_size}
+    rust::append_envs    SCCACHE_DIR=${rustcache_dir}
+    rust::append_envs    SCCACHE_SERVER_UDS=[file join ${rustcache_dir} sccache.sock]
+    rust::append_envs    CARGO_INCREMENTAL=0
+}
 
 proc rust::set_environment {} {
     global prefix configure.pkg_config_path
