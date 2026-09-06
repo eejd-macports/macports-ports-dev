@@ -616,7 +616,11 @@ proc rust::rust_pg_callback {} {
         depends_build-append            port:sccache
         rust::append_envs               RUSTC_WRAPPER=${prefix}/bin/sccache
         rust::append_envs               SCCACHE_CACHE_SIZE=${rustcache_size}
-        rust::append_envs               SCCACHE_DIR=${rustcache_dir}
+        # Must match base's macports.tcl/portconfigure_run.tcl exactly: the base
+        # lifecycle strips these entries with `lsearch -exact`. The store is a
+        # subdirectory because sccache's LRU evicts everything under SCCACHE_DIR,
+        # and the shared vendor tree and linker wrappers are siblings of it.
+        rust::append_envs               SCCACHE_DIR=[file join ${rustcache_dir} sccache]
         rust::append_envs               SCCACHE_SERVER_UDS=[file join ${rustcache_dir} sccache.sock]
         rust::append_envs               CARGO_INCREMENTAL=0
     }

@@ -82,7 +82,7 @@ proc evaluate_rustcache_contract {group enabled {test_subport rustcache-test}} {
 set cache_environment [list \
     RUSTC_WRAPPER=/opt/local/bin/sccache \
     SCCACHE_CACHE_SIZE=20G \
-    SCCACHE_DIR=/var/macports/build/.rustcache \
+    SCCACHE_DIR=/var/macports/build/.rustcache/sccache \
     SCCACHE_SERVER_UDS=/var/macports/build/.rustcache/sccache.sock \
     CARGO_INCREMENTAL=0]
 
