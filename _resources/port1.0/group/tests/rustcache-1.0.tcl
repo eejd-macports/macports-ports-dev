@@ -709,7 +709,8 @@ test vendor-switch-gives-up-when-an-unpublishable-crate-has-an-ambiguous-name {
     list \
         $::warned \
         [lsort [lmap p [glob -nocomplain -directory $source_dir -types d -- *] {file tail $p}]] \
-        [expr {[string first "directory = \"[file join $rustcache vendor]\"" $text] >= 0}]
+        [expr {[string first "directory = \"[file join $rustcache vendor]\"" $text] >= 0}] \
+        [file exists [file join $source_dir serde-1.0.0 lib.rs]]
 } -cleanup {
     foreach c {option tbool compwrap::wrap_compiler ui_debug ui_warn} {rename $c {}}
     foreach v {cargo.home cargo.crates cargo.crates_github cargo.vendor_shared cargo.update
@@ -719,7 +720,7 @@ test vendor-switch-gives-up-when-an-unpublishable-crate-has-an-ambiguous-name {
     }
     set ::rust::pristine_signatures [dict create]
     file delete -force -- $rustcache $workpath
-} -result {1 {serde-1.0.0 syn-1.0.109 syn-2.0.48} 0}
+} -result {1 {serde-1.0.0 syn-1.0.109 syn-2.0.48} 0 1}
 
 set failed $::tcltest::numTests(Failed)
 cleanupTests

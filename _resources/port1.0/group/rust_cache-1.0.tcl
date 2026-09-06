@@ -594,16 +594,34 @@ proc rust::vendor_switch {} {
         if {[dict exists [dict get $plan crate_name] $name]} {
             set cname [dict get [dict get $plan crate_name] $name]
         }
-        if {$cname eq "" || $cname in [dict get $plan ambiguous]} {
+        # $cname eq "" is a defensive guard, not an expected edge case: a crate only reaches
+        # $stranded by way of `shared`, and plan_vendor_switch can only classify a crate shared
+        # if import_crate recorded a signature for it, which it does only for declared crates --
+        # every one of which is in crate_name. Reaching it means that invariant broke, which is a
+        # different and louder problem than the ambiguity below, so say so separately.
+        if {$cname eq ""} {
+            ui_warn "Rust cache: ${name} is shared but is not a declared crate; giving up the\
+                     shared tree for this port"
+        } elseif {$cname in [dict get $plan ambiguous]} {
             ui_warn "Rust cache: ${name} could not be shared and its name is not unique in this\
                      port; falling back to this port's own crate tree"
-            foreach done $published {
-                if {![file isdirectory [file join $source_dir $done]]} {
-                    catch {file copy -- [file join $vendor_dir $done] [file join $source_dir $done]}
+        } else {
+            continue
+        }
+        foreach done $published {
+            if {![file isdirectory [file join $source_dir $done]]} {
+                # A failed copy leaves cargo pointed at a crate directory that is missing or
+                # half-written, and it would otherwise report only its own opaque resolve
+                # error. Keep going -- this is already the recovery path -- but say which
+                # crate did not come back.
+                if {[catch {file copy -- [file join $vendor_dir $done] \
+                                         [file join $source_dir $done]} result]} {
+                    ui_warn "Rust cache: could not restore ${done} to this port's own crate\
+                             tree: ${result}"
                 }
             }
-            return
         }
+        return
     }
 
     # Anything cargo must still find in this port's own tree: crates it modified, crates that
