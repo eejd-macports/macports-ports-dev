@@ -293,6 +293,201 @@ if {![catch {package require Pextlib 1.0}]} {
     } -result {/nonexistent/compwrap/ld}
 }
 
+####################################################################################################
+# Shared vendor tree
+####################################################################################################
+
+# Build a crate tree on disk and return {source_dir signatures}. Each crate is given as
+# {dirname content}; a content of "" means the crate is created and then modified afterwards, which
+# is how a reinplace or a Portfile patch looks to the signature check.
+proc make_crate_tree {label crates} {
+    set source_dir [makeDirectory ${label}_macports]
+    foreach {name content} $crates {
+        set dir [makeDirectory $name $source_dir]
+        makeFile "// ${name}" lib.rs $dir
+        makeFile "\[package\]\nname = \"${name}\"\n" Cargo.toml $dir
+    }
+    set signatures [dict create]
+    foreach dir [glob -nocomplain -directory $source_dir -types d -- *] {
+        dict set signatures [file tail $dir] [rust::vendor_signature $dir]
+    }
+    return [list $source_dir $signatures]
+}
+
+proc touch_crate {source_dir name} {
+    set path [file join $source_dir $name lib.rs]
+    set fd [open $path a]
+    puts $fd "// patched"
+    close $fd
+    file mtime $path [expr {[clock seconds] + 120}]
+}
+
+test plan-vendor-switch-shares-pristine-and-keeps-modified {
+    A crate still identical to the extracted .crate is shared; one the port modified in place is
+    kept private so the modification cannot leak into another port's build.
+} -setup {
+    lassign [make_crate_tree plan_basic {serde-1.0.0 {} libc-0.2.0 {} kqueue-1.0.4 {}}] source_dir signatures
+    touch_crate $source_dir kqueue-1.0.4
+} -body {
+    set plan [rust::plan_vendor_switch [dict create \
+        crates {serde 1.0.0 aaa libc 0.2.0 bbb kqueue 1.0.4 ccc} \
+        source_dir $source_dir \
+        signatures $signatures]]
+    list [dict get $plan shared] [dict get $plan private] [dict get $plan fallback]
+} -cleanup {
+    file delete -force -- $source_dir
+} -result {{libc-0.2.0 serde-1.0.0} kqueue-1.0.4 {}}
+
+test plan-vendor-switch-excludes-github-crates {
+    Crates fetched from a git source are neither shared nor overridden: they stay in the port's own
+    directory source, which is where their git source replacement points.
+} -setup {
+    lassign [make_crate_tree plan_github {serde-1.0.0 {} dep-abc123 {}}] source_dir signatures
+} -body {
+    set plan [rust::plan_vendor_switch [dict create \
+        crates {serde 1.0.0 aaa} \
+        source_dir $source_dir \
+        github_dirs {dep-abc123} \
+        signatures $signatures]]
+    list [dict get $plan shared] [dict get $plan private]
+} -cleanup {
+    file delete -force -- $source_dir
+} -result {serde-1.0.0 {}}
+
+test plan-vendor-switch-falls-back-when-an-override-would-be-ambiguous {
+    cargo matches a `paths` override by package name alone, so a port that modified one version of
+    a crate while another version of the same crate is also in its graph cannot use overrides at
+    all -- the override would capture both. The whole port keeps its private tree.
+} -setup {
+    lassign [make_crate_tree plan_ambiguous {syn-1.0.109 {} syn-2.0.48 {} serde-1.0.0 {}}] source_dir signatures
+    touch_crate $source_dir syn-1.0.109
+} -body {
+    set plan [rust::plan_vendor_switch [dict create \
+        crates {syn 1.0.109 aaa syn 2.0.48 bbb serde 1.0.0 ccc} \
+        source_dir $source_dir \
+        signatures $signatures]]
+    expr {[dict get $plan fallback] ne ""}
+} -cleanup {
+    file delete -force -- $source_dir
+} -result 1
+
+test plan-vendor-switch-keeps-a-crate-with-no-recorded-signature {
+    Without a signature there is no evidence the crate is pristine, so it is not shared.
+} -setup {
+    lassign [make_crate_tree plan_unrecorded {serde-1.0.0 {} libc-0.2.0 {}}] source_dir signatures
+    dict unset signatures libc-0.2.0
+} -body {
+    set plan [rust::plan_vendor_switch [dict create \
+        crates {serde 1.0.0 aaa libc 0.2.0 bbb} \
+        source_dir $source_dir \
+        signatures $signatures]]
+    list [dict get $plan shared] [dict get $plan private] [dict get $plan fallback]
+} -cleanup {
+    file delete -force -- $source_dir
+} -result {serde-1.0.0 libc-0.2.0 {}}
+
+test publish-crate-is-idempotent-and-refuses-a-name-collision {
+    Publishing the same crate twice is a no-op, and a directory that has the same name but a
+    different package checksum is never treated as the same crate.
+} -setup {
+    set vendor [makeDirectory publish_vendor]
+    set port_a [makeDirectory publish_a]
+    set port_b [makeDirectory publish_b]
+    set port_c [makeDirectory publish_c]
+    foreach {root chksum} [list $port_a \"aaa\" $port_b \"aaa\" $port_c \"zzz\"] {
+        set dir [makeDirectory serde-1.0.0 $root]
+        makeFile "// serde" lib.rs $dir
+        makeFile "{\"package\": ${chksum}, \"files\": {}}" .cargo-checksum.json $dir
+    }
+} -body {
+    set first [rust::publish_crate $vendor [file join $port_a serde-1.0.0]]
+    set second [rust::publish_crate $vendor [file join $port_b serde-1.0.0]]
+    set collision [rust::publish_crate $vendor [file join $port_c serde-1.0.0]]
+    list \
+        $first $second $collision \
+        [file isdirectory [file join $vendor serde-1.0.0]] \
+        [file exists [file join $port_a serde-1.0.0]] \
+        [llength [glob -nocomplain -directory $vendor -types d -- .tmp-*]]
+} -cleanup {
+    file delete -force -- $vendor $port_a $port_b $port_c
+} -result {1 1 0 1 0 0}
+
+test sweep-stale-staging-removes-only-abandoned-directories {
+    Staging left by an interrupted build is cleaned up; staging from a build that may still be
+    running is left alone, as is a published crate.
+} -setup {
+    set vendor [makeDirectory sweep_vendor]
+    makeDirectory .tmp-serde-1.0.0-111 $vendor
+    makeDirectory .tmp-libc-0.2.0-222 $vendor
+    makeDirectory serde-1.0.0 $vendor
+    file mtime [file join $vendor .tmp-serde-1.0.0-111] [expr {[clock seconds] - 172800}]
+} -body {
+    rust::sweep_stale_staging $vendor
+    lsort [lmap path [glob -nocomplain -directory $vendor -types d -- * .tmp-*] {file tail $path}]
+} -cleanup {
+    file delete -force -- $vendor
+} -result {.tmp-libc-0.2.0-222 serde-1.0.0}
+
+test vendor-signatures-survive-between-phases {
+    Extraction and configuration can run in separate `port` invocations, so the signatures are
+    written to disk rather than kept in the interpreter.
+} -setup {
+    set cargo_home [makeDirectory signatures_home]
+    lassign [make_crate_tree signature_roundtrip {serde-1.0.0 {}}] tree _
+    file rename $tree [file join $cargo_home macports]
+} -body {
+    set written [rust::record_vendor_signatures $cargo_home]
+    set read_back [rust::read_vendor_signatures $cargo_home]
+    list \
+        [expr {$written eq $read_back}] \
+        [dict exists $read_back serde-1.0.0] \
+        [rust::read_vendor_signatures [makeDirectory signatures_empty]]
+} -cleanup {
+    file delete -force -- $cargo_home
+} -result {1 1 {}}
+
+test warn-lockfile-drift-reports-undeclared-registry-crates {
+    A registry dependency in Cargo.lock that cargo.crates does not declare is reported, because a
+    shared vendor tree makes it likelier to be satisfied silently by another port's copy. Git and
+    workspace-local packages have no registry source and are not reported.
+} -setup {
+    set lockfile [makeFile {
+[[package]]
+name = "serde"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
+name = "libc"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
+name = "mytool"
+version = "0.1.0"
+
+[[package]]
+name = "gitdep"
+version = "0.1.0"
+source = "git+https://github.com/example/dep?branch=main#abc123"
+} Cargo.lock]
+    set warnings [list]
+    if {[llength [info commands ui_warn]]} {
+        rename ui_warn ui_warn_saved
+    }
+    proc ui_warn {msg} {lappend ::warnings $msg}
+} -body {
+    rust::warn_lockfile_drift $lockfile {serde 1.0.0 aaa}
+    rust::warn_lockfile_drift [file join $testdir no-such-lockfile] {}
+    set warnings
+} -cleanup {
+    rename ui_warn {}
+    if {[llength [info commands ui_warn_saved]]} {
+        rename ui_warn_saved ui_warn
+    }
+    file delete -force -- $lockfile
+} -result {{Cargo.lock names registry crates that cargo.crates does not declare: libc-0.2.0}}
+
 set failed $::tcltest::numTests(Failed)
 cleanupTests
 if {${failed} > 0} {

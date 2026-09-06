@@ -49,7 +49,8 @@ options cargo.bin \
         cargo.dir \
         cargo.crates \
         cargo.offline_cmd \
-        cargo.crates_github cargo.update
+        cargo.crates_github cargo.update \
+        cargo.vendor_shared
 
 default cargo.bin           {${prefix}/bin/cargo}
 default cargo.home          {${workpath}/.home/.cargo}
@@ -59,6 +60,14 @@ default cargo.crates_github {}
 
 # if a dependency has been patched, `--offline` might be a reasonable choice
 default     cargo.offline_cmd   {--frozen}
+
+# Compile crates that are byte-for-byte the published .crate from a tree shared by every port,
+# rather than from this port's own copy, so that identical crates produce identical rustc command
+# lines and the Rust compiler cache can serve one port's dependency from another's build. Defaults
+# to following the global Rust cache setting; a port whose crates cannot be shared can set it to no
+# and get the private tree back with no other change.
+options     cargo.vendor_shared
+default     cargo.vendor_shared {[tbool configure.rustcache]}
 
 # some packags do not provide Cargo.lock,
 # so offer the option of running cargo-update
@@ -304,6 +313,10 @@ post-extract {
             set cratefile ${cname}-${crevision}.tar.gz
             rust::import_crate_github ${cname} ${cgithub} ${crevision} ${chksum} ${cratefile}
         }
+
+        # Take this while the crates are still exactly what the distfiles contained, so that a
+        # later reinplace or patch can be told apart from an untouched crate.
+        rust::record_vendor_signatures ${cargo.home}
     }
 
     if {${subport} ne "rust" && [join [lrange [split ${subport} -] 0 1] -] ne "rust-bootstrap"} {
@@ -326,6 +339,12 @@ post-extract {
             targets $targets]]
         close $conf
     }
+}
+
+# Point cargo at the shared vendor tree, once the crates have been extracted and any patching has
+# happened, but before anything is compiled.
+pre-configure {
+    rust::vendor_switch
 }
 
 proc rust::append_envs { var {phases {configure build destroot}} } {
