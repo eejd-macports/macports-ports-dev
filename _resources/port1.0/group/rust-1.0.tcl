@@ -72,9 +72,16 @@ default     cargo.vendor_shared {[tbool configure.rustcache]}
 # so offer the option of running cargo-update
 default     cargo.update        {no}
 
-# use `--remap-path-prefix` to prevent build information from bing included installed binaries
+# use `--remap-path-prefix` to prevent build information from being included in installed binaries
+#
+# The rules map the *shared parents* -- the build root and the shared vendor tree -- onto fixed
+# tokens, rather than mapping each port's own private directories onto the empty string. sccache
+# hashes the rustc command line, and --remap-path-prefix is part of it, so a per-port remap is
+# itself enough to give two ports different cache keys for the same crate. Mapping shared parents
+# gives every port the same arguments, and the tokens keep the emitted debug paths independent of
+# where the machine that built the binary archive keeps its ports.
 options     rust.remap
-default     rust.remap          {${cargo.home} "" ${worksrcpath} ""}
+default     rust.remap          {[rust::remap_default]}
 
 # flags to be passed to the rust compiler
 # --remap-path-prefix=... is eventually added unless rust.remap is empty

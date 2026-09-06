@@ -191,6 +191,22 @@ proc rust::default_remap {build_root vendor_dir} {
     return $remap
 }
 
+# The rust.remap default, read out of the port's context. Kept separate from default_remap so the
+# policy above stays testable without a port, and so a base that predates rustcache_dir still gets
+# the build-root rule.
+proc rust::remap_default {} {
+    global portdbpath rustcache_dir
+    set build_root ""
+    if {[info exists portdbpath]} {
+        set build_root [file join $portdbpath build]
+    }
+    set vendor_dir ""
+    if {[info exists rustcache_dir]} {
+        set vendor_dir [file join $rustcache_dir vendor]
+    }
+    return [rust::default_remap $build_root $vendor_dir]
+}
+
 # Publish a content-addressed copy of the linker wrapper and return its path.
 #
 # cargo passes `-C linker=<path>` on every rustc invocation, and MacPorts'

@@ -210,6 +210,23 @@ test default-remap-orders-vendor-last {
     rust::default_remap /var/macports/build /var/macports/build/.rustcache/vendor
 } -result {/var/macports/build /macports/build /var/macports/build/.rustcache/vendor /macports/vendor}
 
+test remap-default-reads-the-port-context {
+    The rust.remap default is derived from the port's own configuration, and a base that has no
+    rustcache_dir still gets the build-root rule rather than an error.
+} -setup {
+    set saved [list [info exists ::portdbpath] [info exists ::rustcache_dir]]
+    set ::portdbpath /var/macports
+    set ::rustcache_dir /var/macports/build/.rustcache
+} -body {
+    set both [rust::remap_default]
+    unset ::rustcache_dir
+    set only_build [rust::remap_default]
+    unset ::portdbpath
+    list $both $only_build [rust::remap_default]
+} -cleanup {
+    unset -nocomplain ::portdbpath ::rustcache_dir
+} -result {{/var/macports/build /macports/build /var/macports/build/.rustcache/vendor /macports/vendor} {/var/macports/build /macports/build} {}}
+
 test default-remap-skips-empty-inputs {
     A port with no shared vendor tree gets only the build-root rule.
 } -body {
