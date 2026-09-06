@@ -16,7 +16,7 @@ permissions:
 jobs:
   build:
     name: ${{ matrix.os }}
-    timeout-minutes: 0
+    timeout-minutes: 360
     concurrency:
       cancel-in-progress: true
       group: ${{ github.ref }}/${{ matrix.os }}
