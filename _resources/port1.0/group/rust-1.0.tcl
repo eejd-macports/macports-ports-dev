@@ -166,6 +166,11 @@ proc cargo.rust_platform {{arch ""}} {
 
 namespace eval rust {}
 
+# Helpers shared with the other Rust PortGroup. Sourced by path rather than
+# included with `PortGroup`, because it is an implementation detail of these
+# two files and not something a Portfile should ever include on its own.
+source [file join [file dirname [info script]] rust_cache-1.0.tcl]
+
 # for symbol ___emutls_get_address (used when thread-local-storage is emulated)
 #
 # for Clang, provides symbol ___muloti4
@@ -417,22 +422,15 @@ post-extract {
     if {[llength ${cargo.crates}] > 0 || [llength ${cargo.crates_github}]>0} {
         file mkdir "${cargo.home}/macports"
 
-        # avoid downloading files from online repository during build phase
-        # use a replacement for crates.io
-        # https://doc.rust-lang.org/cargo/reference/source-replacement.html
-        set conf [open "${cargo.home}/config.toml" "w"]
-        puts $conf "\[source\]"
-        puts $conf "\[source.macports\]"
-        puts $conf "directory = \"${cargo.home}/macports\""
-        puts $conf "\[source.crates-io\]"
-        puts $conf "replace-with = \"macports\""
-        puts $conf "local-registry = \"/var/empty\""
+        set git_sources [list]
         foreach {cname cgithub cbranch crevision chksum} ${cargo.crates_github} {
-            puts $conf "\[source.\"https://github.com/${cgithub}\"\]"
-            puts $conf "git = \"https://github.com/${cgithub}\""
-            puts $conf "branch = \"${cbranch}\""
-            puts $conf "replace-with = \"macports\""
+            lappend git_sources [list "https://github.com/${cgithub}" ${cbranch} macports]
         }
+        set conf [open "${cargo.home}/config.toml" "w"]
+        puts -nonewline $conf [rust::render_cargo_config [dict create \
+            sources [dict create \
+                directory "${cargo.home}/macports" \
+                git $git_sources]]]
         close $conf
 
         # import all crates
@@ -451,19 +449,19 @@ post-extract {
         # see comment below concerning RUSTC and RUSTFLAGS
 
         file mkdir "${cargo.home}"
-        set conf [open "${cargo.home}/config.toml" "a"]
-
-        puts $conf "\[build\]"
-        puts $conf "rustc = \"${prefix}/bin/rustc\""
-        if {[option rust.flags] ne ""} {
-            puts $conf "rustflags = \[\"[join [option rust.flags] {", "}]\"\]"
-        }
 
         # be sure to include all architectures in case, e.g., a 64-bit Cargo compiles a 32-bit port
+        set targets [list]
         foreach arch {arm64 x86_64 i386 ppc ppc64} {
-            puts $conf "\[target.[option triplet.${arch}]\]"
-            puts $conf "linker = \"[compwrap::wrap_compiler ld]\""
+            lappend targets [list [option triplet.${arch}] [compwrap::wrap_compiler ld]]
         }
+
+        set conf [open "${cargo.home}/config.toml" "a"]
+        puts -nonewline $conf [rust::render_cargo_config [dict create \
+            build [dict create \
+                rustc "${prefix}/bin/rustc" \
+                rustflags [option rust.flags]] \
+            targets $targets]]
         close $conf
     }
 }
