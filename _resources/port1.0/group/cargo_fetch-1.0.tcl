@@ -389,7 +389,11 @@ proc rust::rust_pg_callback {} {
         ${subport} in {rust cargo sccache}
         || [string match rust-bootstrap* ${subport}]
     }]
-    if {[tbool configure.rustcache] && !${builds_rust_toolchain}} {
+    if {${builds_rust_toolchain}} {
+        # Suppress the companion base lifecycle as well as dependency and
+        # environment wiring, avoiding a cache/toolchain bootstrap cycle.
+        set configure.rustcache no
+    } elseif {[tbool configure.rustcache]} {
         depends_build-delete            port:sccache
         depends_build-append            port:sccache
         rust::append_envs               RUSTC_WRAPPER=${prefix}/bin/sccache
