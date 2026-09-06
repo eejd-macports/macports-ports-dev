@@ -641,6 +641,86 @@ test vendor-switch-leaves-every-declared-crate-reachable {
     file delete -force -- $rustcache $workpath
 } -result {{libc-0.2.0 serde-1.0.0} kqueue-1.0.4 1 1 1}
 
+test vendor-switch-gives-up-when-an-unpublishable-crate-has-an-ambiguous-name {
+    A crate that could not be published is reached through a `paths` override, and cargo matches
+    an override by package name alone. If the port's graph holds two versions of that name the
+    override would capture both -- the hazard plan_vendor_switch already refuses for a modified
+    crate. Whether a crate can be published is only known after the attempt, so the port gives up
+    the shared tree and the crates already published are copied back.
+} -setup {
+    set ::rust::pristine_signatures [dict create]
+    set rustcache [makeDirectory ambig_rustcache]
+    set workpath [makeDirectory ambig_work]
+    set cargo_home [makeDirectory .cargo [makeDirectory .home $workpath]]
+    set source_dir [makeDirectory macports $cargo_home]
+    foreach name {serde-1.0.0 syn-1.0.109 syn-2.0.48} {
+        set dir [makeDirectory $name $source_dir]
+        makeFile "// crate" lib.rs $dir
+        makeFile "\[package\]" Cargo.toml $dir
+        makeFile "{\"package\": \"chk-$name\", \"files\": {}}" .cargo-checksum.json $dir
+        rust::note_pristine_signature $cargo_home $name
+    }
+    rust::record_vendor_signatures $cargo_home
+    # A plain file where syn-1.0.109 has to be published: the rename fails, so the crate is
+    # stranded, and its name carries two versions in this port.
+    makeDirectory vendor $rustcache
+    makeFile "not a directory" syn-1.0.109 [file join $rustcache vendor]
+
+    set ::cargo.home $cargo_home
+    set ::cargo.crates {serde 1.0.0 a syn 1.0.109 b syn 2.0.48 c}
+    set ::cargo.crates_github {}
+    set ::cargo.vendor_shared yes
+    set ::cargo.update no
+    set ::configure.rustcache yes
+    set ::rustcache_dir $rustcache
+    set ::prefix /opt/local
+    set ::worksrcpath [makeDirectory src $workpath]
+    set ::portdbpath [makeDirectory portdb $workpath]
+    set ::wrapper [makeFile "#!/bin/sh\n" ld [makeDirectory compwrap $workpath]]
+    set ::switch_options [dict create \
+        os.platform darwin \
+        macosx_deployment_target 15.0 \
+        rust.flags {} \
+        triplet.arm64 aarch64-apple-darwin \
+        triplet.x86_64 x86_64-apple-darwin \
+        triplet.i386 i686-apple-darwin \
+        triplet.ppc powerpc-apple-darwin \
+        triplet.ppc64 powerpc64-apple-darwin]
+    proc option {name} {return [dict get $::switch_options $name]}
+    proc tbool {name} {
+        upvar #0 $name value
+        return [expr {[info exists value] && [string is true -strict $value]}]
+    }
+    namespace eval compwrap {}
+    proc compwrap::wrap_compiler {tag} {return $::wrapper}
+    proc ui_debug {args} {}
+    set ::warned 0
+    proc ui_warn {args} {set ::warned 1}
+    # What post-extract left behind: the port's own directory source.
+    set fd [open [file join $cargo_home config.toml] w]
+    puts $fd "\[source.macports\]"
+    puts $fd "directory = \"$source_dir\""
+    close $fd
+} -body {
+    rust::vendor_switch
+    set fd [open [file join $cargo_home config.toml] r]
+    set text [read $fd]
+    close $fd
+    list \
+        $::warned \
+        [lsort [lmap p [glob -nocomplain -directory $source_dir -types d -- *] {file tail $p}]] \
+        [expr {[string first "directory = \"[file join $rustcache vendor]\"" $text] >= 0}]
+} -cleanup {
+    foreach c {option tbool compwrap::wrap_compiler ui_debug ui_warn} {rename $c {}}
+    foreach v {cargo.home cargo.crates cargo.crates_github cargo.vendor_shared cargo.update
+               configure.rustcache rustcache_dir prefix worksrcpath portdbpath wrapper
+               switch_options warned} {
+        unset -nocomplain ::$v
+    }
+    set ::rust::pristine_signatures [dict create]
+    file delete -force -- $rustcache $workpath
+} -result {1 {serde-1.0.0 syn-1.0.109 syn-2.0.48} 0}
+
 set failed $::tcltest::numTests(Failed)
 cleanupTests
 if {${failed} > 0} {

@@ -497,7 +497,15 @@ proc rust::plan_vendor_switch {spec} {
         }
     }
 
-    return [dict create shared $shared private $private fallback $fallback]
+    set ambiguous [list]
+    dict for {cname versions} $versions_of {
+        if {[llength $versions] > 1} {
+            lappend ambiguous $cname
+        }
+    }
+
+    return [dict create shared $shared private $private fallback $fallback \
+        crate_name $crate_name ambiguous $ambiguous]
 }
 
 # Move this port onto the shared vendor tree, if it can use one.
@@ -572,6 +580,29 @@ proc rust::vendor_switch {} {
             # no path to it at all: config.toml is about to point crates.io exclusively at the
             # shared tree, and local-registry is poisoned, so an unlisted crate is unreachable.
             lappend stranded $name
+        }
+    }
+
+    # A crate that could not be published is about to be reached through a `paths` override, and
+    # cargo matches an override by package name alone. If this port's graph holds more than one
+    # version of that name, the override would capture both -- the same hazard plan_vendor_switch
+    # refuses to accept for a modified crate. It cannot be foreseen, because whether a crate can
+    # be published is only known here, so the port gives up the shared tree entirely and the
+    # crates already published are copied back.
+    foreach name $stranded {
+        set cname ""
+        if {[dict exists [dict get $plan crate_name] $name]} {
+            set cname [dict get [dict get $plan crate_name] $name]
+        }
+        if {$cname eq "" || $cname in [dict get $plan ambiguous]} {
+            ui_warn "Rust cache: ${name} could not be shared and its name is not unique in this\
+                     port; falling back to this port's own crate tree"
+            foreach done $published {
+                if {![file isdirectory [file join $source_dir $done]]} {
+                    catch {file copy -- [file join $vendor_dir $done] [file join $source_dir $done]}
+                }
+            }
+            return
         }
     }
 
