@@ -430,24 +430,6 @@ proc rust::warn_lockfile_drift {lockfile crates} {
 }
 
 
-# Decide which of a port's crates can be compiled from the shared tree.
-#
-# Pure: takes the facts and returns the decision, so the policy can be tested without extracting
-# anything. `spec` keys:
-#   crates       the port's cargo.crates list (name version checksum triples)
-#   source_dir   directory the crates were extracted into
-#   github_dirs  directory names that came from cargo.crates_github rather than crates.io
-#   signatures   dict of directory name -> signature recorded at extract time
-#
-# Returns a dict:
-#   shared    directory names that are byte-for-byte the published crate
-#   private   directory names that must stay in this port's own tree
-#   fallback  reason the whole port has to keep its private tree, or "" to proceed
-#
-# The fallback exists because cargo matches a `paths` override by package *name* only
-# (registry.rs: Dependency::new_override takes the name and no version requirement). If a port has
-# modified one version of a crate while another version of the same crate is also in its graph, an
-# override for the modified copy would capture both, so the whole port keeps its private tree.
 # Copy already-published crates back into the port's own tree, for when vendor_switch gives up
 # the shared tree after it has started publishing. The crates stay in the shared tree as well:
 # publish_crate leaves a copy there, other ports may already be resolving against it, and it is
@@ -479,6 +461,25 @@ proc rust::restore_published {vendor_dir source_dir published} {
     return $failed
 }
 
+
+# Decide which of a port's crates can be compiled from the shared tree.
+#
+# Pure: takes the facts and returns the decision, so the policy can be tested without extracting
+# anything. `spec` keys:
+#   crates       the port's cargo.crates list (name version checksum triples)
+#   source_dir   directory the crates were extracted into
+#   github_dirs  directory names that came from cargo.crates_github rather than crates.io
+#   signatures   dict of directory name -> signature recorded at extract time
+#
+# Returns a dict:
+#   shared    directory names that are byte-for-byte the published crate
+#   private   directory names that must stay in this port's own tree
+#   fallback  reason the whole port has to keep its private tree, or "" to proceed
+#
+# The fallback exists because cargo matches a `paths` override by package *name* only
+# (registry.rs: Dependency::new_override takes the name and no version requirement). If a port has
+# modified one version of a crate while another version of the same crate is also in its graph, an
+# override for the modified copy would capture both, so the whole port keeps its private tree.
 proc rust::plan_vendor_switch {spec} {
     foreach key {crates source_dir github_dirs signatures} {
         if {![dict exists $spec $key]} {

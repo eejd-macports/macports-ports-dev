@@ -667,12 +667,16 @@ test restore-published-copies-crates-back-without-disturbing-the-shared-tree {
     set fd [open [file join $source already-9.9.9 lib.rs] r]
     set kept [string trim [read $fd]]
     close $fd
-    list $failed $restored $shared_intact $kept [llength $::warnings]
+    # Without the isdirectory guard, `file copy` onto an existing directory SUCCEEDS and
+    # nests the shared copy inside it: no error, no warning, original file untouched. Every
+    # other assertion here passes in that case, so the nesting is what actually pins the guard.
+    set nested [file exists [file join $source already-9.9.9 already-9.9.9]]
+    list $failed $restored $shared_intact $kept [llength $::warnings] $nested
 } -cleanup {
     rename ui_warn {}
     unset -nocomplain ::warnings
     file delete -force -- $vendor $source
-} -result {{} {1 1} 1 {// port's own} 0}
+} -result {{} {1 1} 1 {// port's own} 0 0}
 
 test restore-published-reports-the-crate-it-could-not-restore {
     A copy that fails is named rather than swallowed, and the remaining crates are still
