@@ -453,6 +453,7 @@ test vendor-signatures-survive-between-phases {
     lassign [make_crate_tree signature_roundtrip {serde-1.0.0 {}}] tree _
     file rename $tree [file join $cargo_home macports]
 } -body {
+    rust::note_pristine_signature $cargo_home serde-1.0.0
     set written [rust::record_vendor_signatures $cargo_home]
     set read_back [rust::read_vendor_signatures $cargo_home]
     list \
@@ -461,6 +462,7 @@ test vendor-signatures-survive-between-phases {
         [rust::read_vendor_signatures [makeDirectory signatures_empty]]
 } -cleanup {
     file delete -force -- $cargo_home
+    set ::rust::pristine_signatures [dict create]
 } -result {1 1 {}}
 
 test warn-lockfile-drift-reports-undeclared-registry-crates {
@@ -504,6 +506,140 @@ source = "git+https://github.com/example/dep?branch=main#abc123"
     }
     file delete -force -- $lockfile
 } -result {{Cargo.lock names registry crates that cargo.crates does not declare: libc-0.2.0}}
+
+test signature-is-taken-before-a-crate-can-be-patched {
+    rust::old_macos_compatibility rewrites some crates in place, and two of its branches
+    (kqueue below 1.0.5 on an i386 build, curl-sys below 0.4.56) sit above its
+    macosx_deployment_target early return, so they fire on any deployment target. If the
+    signature were taken after the extract phase rather than at import time, a patched crate
+    would match its own baseline, be classified pristine, and be published for every other
+    port to compile against.
+} -setup {
+    set ::rust::pristine_signatures [dict create]
+    set cargo_home [makeDirectory patched_home]
+    set source_dir [makeDirectory macports $cargo_home]
+    set crate [makeDirectory curl-sys-0.4.55 $source_dir]
+    makeFile "// build" build.rs $crate
+    makeFile "{\"package\": \"aaa\", \"files\": {}}" .cargo-checksum.json $crate
+} -body {
+    # What import_crate now does: signature first, patch second.
+    rust::note_pristine_signature $cargo_home curl-sys-0.4.55
+    set fd [open [file join $crate build.rs] a]
+    puts $fd "// macports: Command::new(\"clang\") rewritten"
+    close $fd
+    file mtime [file join $crate build.rs] [expr {[clock seconds] + 120}]
+
+    set plan [rust::plan_vendor_switch [dict create \
+        crates {curl-sys 0.4.55 aaa} \
+        source_dir $source_dir \
+        signatures [rust::record_vendor_signatures $cargo_home]]]
+    list [dict get $plan shared] [dict get $plan private]
+} -cleanup {
+    file delete -force -- $cargo_home
+    set ::rust::pristine_signatures [dict create]
+} -result {{} curl-sys-0.4.55}
+
+test publish-crate-restores-the-port-copy-when-it-cannot-publish {
+    A crate that cannot reach the shared tree must still be where the port left it. Once
+    config.toml points crates.io exclusively at the shared tree and poisons local-registry, a
+    crate that is in neither place is unreachable and the build fails with no useful message.
+} -setup {
+    set vendor [makeDirectory restore_vendor]
+    set port_a [makeDirectory restore_a]
+    set crate [makeDirectory serde-1.0.0 $port_a]
+    makeFile "// serde" lib.rs $crate
+    makeFile "{\"package\": \"aaa\", \"files\": {}}" .cargo-checksum.json $crate
+    # A plain file where the staged directory has to be renamed to: the rename fails, and by
+    # then the crate has already been moved out of the port's own tree.
+    makeFile "not a directory" serde-1.0.0 $vendor
+    proc ui_debug {args} {}
+} -body {
+    set published [rust::publish_crate $vendor [file join $port_a serde-1.0.0]]
+    list \
+        $published \
+        [file isdirectory [file join $port_a serde-1.0.0]] \
+        [file exists [file join $port_a serde-1.0.0 lib.rs]] \
+        [llength [glob -nocomplain -directory $vendor -types d -- .tmp-*]]
+} -cleanup {
+    rename ui_debug {}
+    file delete -force -- $vendor $port_a
+} -result {0 1 1 0}
+
+test vendor-switch-leaves-every-declared-crate-reachable {
+    End to end: pristine crates move to the shared tree, a modified one stays private and is
+    named in `paths`, and the rendered config.toml gives cargo a route to every crate the port
+    declares -- through the shared directory source or through an override.
+} -setup {
+    set ::rust::pristine_signatures [dict create]
+    set rustcache [makeDirectory switch_rustcache]
+    set workpath [makeDirectory switch_work]
+    set cargo_home [makeDirectory .cargo [makeDirectory .home $workpath]]
+    set source_dir [makeDirectory macports $cargo_home]
+    foreach name {serde-1.0.0 libc-0.2.0 kqueue-1.0.4} {
+        set dir [makeDirectory $name $source_dir]
+        makeFile "// crate" lib.rs $dir
+        makeFile "\[package\]" Cargo.toml $dir
+        makeFile "{\"package\": \"chk-$name\", \"files\": {}}" .cargo-checksum.json $dir
+        rust::note_pristine_signature $cargo_home $name
+    }
+    rust::record_vendor_signatures $cargo_home
+    # kqueue stands in for a crate old_macos_compatibility rewrote after extraction.
+    set patched [file join $source_dir kqueue-1.0.4 lib.rs]
+    set fd [open $patched a]
+    puts $fd "// patched"
+    close $fd
+    file mtime $patched [expr {[clock seconds] + 120}]
+
+    set ::cargo.home $cargo_home
+    set ::cargo.crates {serde 1.0.0 a libc 0.2.0 b kqueue 1.0.4 c}
+    set ::cargo.crates_github {}
+    set ::cargo.vendor_shared yes
+    set ::cargo.update no
+    set ::configure.rustcache yes
+    set ::rustcache_dir $rustcache
+    set ::prefix /opt/local
+    set ::worksrcpath [makeDirectory src $workpath]
+    set ::portdbpath [makeDirectory portdb $workpath]
+    set ::wrapper [makeFile "#!/bin/sh\n" ld [makeDirectory compwrap $workpath]]
+    set ::switch_options [dict create \
+        os.platform darwin \
+        macosx_deployment_target 15.0 \
+        rust.flags {} \
+        triplet.arm64 aarch64-apple-darwin \
+        triplet.x86_64 x86_64-apple-darwin \
+        triplet.i386 i686-apple-darwin \
+        triplet.ppc powerpc-apple-darwin \
+        triplet.ppc64 powerpc64-apple-darwin]
+    proc option {name} {return [dict get $::switch_options $name]}
+    proc tbool {name} {
+        upvar #0 $name value
+        return [expr {[info exists value] && [string is true -strict $value]}]
+    }
+    namespace eval compwrap {}
+    proc compwrap::wrap_compiler {tag} {return $::wrapper}
+    proc ui_debug {args} {}
+    proc ui_warn {args} {}
+} -body {
+    rust::vendor_switch
+    set fd [open [file join $cargo_home config.toml] r]
+    set text [read $fd]
+    close $fd
+    list \
+        [lsort [lmap p [glob -nocomplain -directory [file join $rustcache vendor] -types d -- *] {file tail $p}]] \
+        [lsort [lmap p [glob -nocomplain -directory $source_dir -types d -- *] {file tail $p}]] \
+        [expr {[string first "paths = \[\"[file join $source_dir kqueue-1.0.4]\"\]" $text] == 0}] \
+        [expr {[string first "directory = \"[file join $rustcache vendor]\"" $text] >= 0}] \
+        [expr {[string first [file join $rustcache compwrap] $text] >= 0}]
+} -cleanup {
+    foreach c {option tbool compwrap::wrap_compiler ui_debug ui_warn} {rename $c {}}
+    foreach v {cargo.home cargo.crates cargo.crates_github cargo.vendor_shared cargo.update
+               configure.rustcache rustcache_dir prefix worksrcpath portdbpath wrapper
+               switch_options} {
+        unset -nocomplain ::$v
+    }
+    set ::rust::pristine_signatures [dict create]
+    file delete -force -- $rustcache $workpath
+} -result {{libc-0.2.0 serde-1.0.0} kqueue-1.0.4 1 1 1}
 
 set failed $::tcltest::numTests(Failed)
 cleanupTests

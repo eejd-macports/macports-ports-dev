@@ -120,6 +120,12 @@ proc rust::render_cargo_config {spec} {
 #
 # .cargo-checksum.json is excluded because the PortGroup writes it itself
 # after extraction, so it would move every crate's signature.
+#
+# What this cannot detect: an edit that changes a file's contents while leaving the file count
+# and every mtime alone. Nothing in MacPorts does that -- reinplace rewrites through a
+# temporary file and patch(1) updates mtimes -- but a Portfile that wrote a file and then
+# restored its mtime by hand would defeat the check. Such a port should set
+# cargo.vendor_shared no.
 proc rust::vendor_signature {dir} {
     set count 0
     set newest 0
@@ -180,6 +186,11 @@ proc rust::_walk_files {dir} {
 #
 # The tokens also make the emitted debug paths node-independent, which matters
 # for a binary archive built on one machine and installed on another.
+#
+# This changes what every Rust port records, not only ports using the shared tree: the previous
+# default mapped the port's own directories to the empty string, so a source path appeared as
+# "src/lib.rs", and it now appears as "/macports/build/<port>/work/.../src/lib.rs". A port that
+# sets rust.remap itself is unaffected.
 proc rust::default_remap {build_root vendor_dir} {
     set remap [list]
     if {$build_root ne ""} {
@@ -262,17 +273,31 @@ proc rust::vendor_signature_file {cargo_home} {
     return [file join $cargo_home vendor-signatures]
 }
 
-# Record the signature of every crate directory just imported.
+# Signatures accumulated during extraction, keyed by crate directory name.
+variable pristine_signatures [dict create]
+
+# Take a crate's signature while it is still exactly what the .crate contained.
+#
+# This has to happen before rust::old_macos_compatibility runs, not after the whole extract
+# phase. Two of its branches -- kqueue below 1.0.5 on an i386 build, and curl-sys below 0.4.56
+# -- sit above its `macosx_deployment_target >= 10.8` early return and therefore fire on any
+# deployment target. A signature taken afterwards would match the patched crate, the crate
+# would be classified pristine, and this port's patched copy would be published for every
+# other port to compile against.
+proc rust::note_pristine_signature {cargo_home name} {
+    variable pristine_signatures
+    dict set pristine_signatures $name \
+        [rust::vendor_signature [file join $cargo_home macports $name]]
+}
+
+# Persist what was accumulated, so the configure phase can read it back in a later `port`
+# invocation.
 proc rust::record_vendor_signatures {cargo_home} {
-    set source_dir [file join $cargo_home macports]
-    set signatures [dict create]
-    foreach dir [glob -nocomplain -directory $source_dir -types d -- *] {
-        dict set signatures [file tail $dir] [rust::vendor_signature $dir]
-    }
+    variable pristine_signatures
     set fd [open [rust::vendor_signature_file $cargo_home] w]
-    puts -nonewline $fd $signatures
+    puts -nonewline $fd $pristine_signatures
     close $fd
-    return $signatures
+    return $pristine_signatures
 }
 
 proc rust::read_vendor_signatures {cargo_home} {
@@ -312,10 +337,13 @@ proc rust::publish_crate {vendor_dir crate_dir} {
     set name [file tail $crate_dir]
     set target [file join $vendor_dir $name]
 
+    # Read the checksum before anything moves, so it stays available on every path below.
+    set ours [rust::crate_package_checksum $crate_dir]
+
     if {[file isdirectory $target]} {
         # Already published. Only reuse it if it really is the same crate: a name collision with
         # different contents has to stay private, or one port would compile the other's source.
-        return [expr {[rust::crate_package_checksum $target] eq [rust::crate_package_checksum $crate_dir]}]
+        return [expr {[rust::crate_package_checksum $target] eq $ours}]
     }
 
     # A leading dot keeps the staging directory invisible to cargo's directory source, which skips
@@ -331,9 +359,20 @@ proc rust::publish_crate {vendor_dir crate_dir} {
         }
     }
     if {[catch {file rename -- $staging $target}]} {
+        if {[file isdirectory $target] && [rust::crate_package_checksum $target] eq $ours} {
+            # Another port published the same crate first.
+            file delete -force -- $staging
+            return 1
+        }
+        # The shared tree does not have this crate and this port still needs it, so put the
+        # copy back where the port expects to find it before giving up.
+        if {![file isdirectory $crate_dir]} {
+            if {[catch {file rename -- $staging $crate_dir}]} {
+                catch {file copy -- $staging $crate_dir}
+            }
+        }
         file delete -force -- $staging
-        return [expr {[file isdirectory $target]
-                      && [rust::crate_package_checksum $target] eq [rust::crate_package_checksum $crate_dir]}]
+        return 0
     }
     return 1
 }
@@ -520,18 +559,26 @@ proc rust::vendor_switch {} {
     }
 
     set published [list]
+    set stranded [list]
     foreach name [dict get $plan shared] {
         if {[rust::publish_crate $vendor_dir [file join $source_dir $name]]} {
             lappend published $name
             # publish_crate moved it; drop any copy a fallback left behind.
             file delete -force -- [file join $source_dir $name]
+        } else {
+            # The shared tree does not hold this crate -- a name collision with different
+            # contents, or a staging failure. publish_crate guarantees the port's own copy is
+            # still there, so override it like a modified crate rather than leaving cargo with
+            # no path to it at all: config.toml is about to point crates.io exclusively at the
+            # shared tree, and local-registry is poisoned, so an unlisted crate is unreachable.
+            lappend stranded $name
         }
     }
 
-    # Anything cargo must still find in this port's own tree: crates it modified, crates that lost
-    # a publishing race, and the git checkouts, which are not crates.io packages at all.
+    # Anything cargo must still find in this port's own tree: crates it modified, crates that
+    # could not be shared, and the git checkouts, which are not crates.io packages at all.
     set overrides [list]
-    foreach name [dict get $plan private] {
+    foreach name [concat [dict get $plan private] $stranded] {
         lappend overrides [file join $source_dir $name]
     }
 
@@ -555,4 +602,7 @@ proc rust::vendor_switch {} {
     close $conf
 
     ui_debug "Rust cache: [llength $published] crates shared, [llength $overrides] kept private"
+    if {[llength $stranded] > 0} {
+        ui_debug "Rust cache: could not share [join $stranded {, }]"
+    }
 }

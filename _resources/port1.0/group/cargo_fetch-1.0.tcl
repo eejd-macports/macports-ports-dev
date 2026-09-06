@@ -281,6 +281,8 @@ proc rust::import_crate {cname cversion chksum cratefile} {
     ui_info "Adding ${cratefile} to cargo home"
     rust::extract_crate ${cratefile}
     rust::write_cargo_checksum "${cname}-${cversion}" "\"${chksum}\""
+    # Before old_macos_compatibility, which may rewrite the crate in place.
+    rust::note_pristine_signature ${cargo.home} "${cname}-${cversion}"
     rust::old_macos_compatibility ${cname} ${cversion}
 }
 
@@ -293,6 +295,7 @@ proc rust::import_crate_github {cname cgithub crevision chksum cratefile} {
     ui_info "Adding ${cratefile} from github to cargo home"
     rust::extract_crate ${cratefile}
     rust::write_cargo_checksum ${cdirname} "null"
+    rust::note_pristine_signature ${cargo.home} ${cdirname}
     rust::old_macos_compatibility ${cname} ${crevision}
 }
 
