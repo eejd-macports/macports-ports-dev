@@ -448,6 +448,37 @@ proc rust::warn_lockfile_drift {lockfile crates} {
 # (registry.rs: Dependency::new_override takes the name and no version requirement). If a port has
 # modified one version of a crate while another version of the same crate is also in its graph, an
 # override for the modified copy would capture both, so the whole port keeps its private tree.
+# Copy already-published crates back into the port's own tree, for when vendor_switch gives up
+# the shared tree after it has started publishing. The crates stay in the shared tree as well:
+# publish_crate leaves a copy there, other ports may already be resolving against it, and it is
+# content-addressed, so a second copy here is not a divergence.
+#
+# A crate whose directory is already present is left alone -- the caller only lists crates whose
+# port-local copy it deleted, so anything back in place got there by some other route and is not
+# ours to overwrite.
+#
+# Failures are reported and skipped rather than raised. This is already the recovery path, and a
+# Tcl error escaping vendor_switch would replace a partial tree with a confusing exception; but a
+# silent failure leaves cargo pointed at a missing or half-written crate directory and only its
+# own opaque resolve error to explain it, so name the crate that did not come back.
+#
+# Returns the crates it could not restore.
+proc rust::restore_published {vendor_dir source_dir published} {
+    set failed [list]
+    foreach done $published {
+        if {[file isdirectory [file join $source_dir $done]]} {
+            continue
+        }
+        if {[catch {file copy -- [file join $vendor_dir $done] \
+                                 [file join $source_dir $done]} result]} {
+            ui_warn "Rust cache: could not restore ${done} to this port's own crate tree:\
+                     ${result}"
+            lappend failed $done
+        }
+    }
+    return $failed
+}
+
 proc rust::plan_vendor_switch {spec} {
     foreach key {crates source_dir github_dirs signatures} {
         if {![dict exists $spec $key]} {
@@ -608,19 +639,7 @@ proc rust::vendor_switch {} {
         } else {
             continue
         }
-        foreach done $published {
-            if {![file isdirectory [file join $source_dir $done]]} {
-                # A failed copy leaves cargo pointed at a crate directory that is missing or
-                # half-written, and it would otherwise report only its own opaque resolve
-                # error. Keep going -- this is already the recovery path -- but say which
-                # crate did not come back.
-                if {[catch {file copy -- [file join $vendor_dir $done] \
-                                         [file join $source_dir $done]} result]} {
-                    ui_warn "Rust cache: could not restore ${done} to this port's own crate\
-                             tree: ${result}"
-                }
-            }
-        }
+        rust::restore_published $vendor_dir $source_dir $published
         return
     }
 

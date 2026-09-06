@@ -641,6 +641,69 @@ test vendor-switch-leaves-every-declared-crate-reachable {
     file delete -force -- $rustcache $workpath
 } -result {{libc-0.2.0 serde-1.0.0} kqueue-1.0.4 1 1 1}
 
+test restore-published-copies-crates-back-without-disturbing-the-shared-tree {
+    Restoring gives the port back its own copy while leaving the shared one in place, and
+    skips a crate whose directory is already there rather than overwriting it.
+} -setup {
+    set vendor [makeDirectory restore_vendor]
+    set source [makeDirectory restore_source]
+    foreach name {serde-1.0.0 syn-2.0.48 already-9.9.9} {
+        makeFile "// $name" lib.rs [makeDirectory $name $vendor]
+    }
+    makeFile "// port's own" lib.rs [makeDirectory already-9.9.9 $source]
+    proc ui_warn {args} {lappend ::warnings [join $args]}
+    set ::warnings [list]
+} -body {
+    set failed [rust::restore_published $vendor $source {serde-1.0.0 syn-2.0.48 already-9.9.9}]
+    set restored [list]
+    foreach name {serde-1.0.0 syn-2.0.48} {
+        lappend restored [file exists [file join $source $name lib.rs]]
+    }
+    # Every crate is still in the shared tree, and the pre-existing port copy was not clobbered.
+    set shared_intact 1
+    foreach name {serde-1.0.0 syn-2.0.48 already-9.9.9} {
+        if {![file exists [file join $vendor $name lib.rs]]} {set shared_intact 0}
+    }
+    set fd [open [file join $source already-9.9.9 lib.rs] r]
+    set kept [string trim [read $fd]]
+    close $fd
+    list $failed $restored $shared_intact $kept [llength $::warnings]
+} -cleanup {
+    rename ui_warn {}
+    unset -nocomplain ::warnings
+    file delete -force -- $vendor $source
+} -result {{} {1 1} 1 {// port's own} 0}
+
+test restore-published-reports-the-crate-it-could-not-restore {
+    A copy that fails is named rather than swallowed, and the remaining crates are still
+    restored instead of the loop giving up at the first failure.
+} -setup {
+    set vendor [makeDirectory fail_vendor]
+    set source [makeDirectory fail_source]
+    foreach name {aaa-1.0.0 bbb-2.0.0} {
+        makeFile "// $name" lib.rs [makeDirectory $name $vendor]
+    }
+    # A plain file where aaa-1.0.0's directory has to land: `file isdirectory` is false, so a
+    # copy is attempted, and it fails because the destination already exists. This is the
+    # failure the end-to-end vendor_switch test cannot stage -- publishing needs source_dir
+    # writable and the vendor entries readable throughout, so there is no way to break the
+    # copy from outside without breaking an earlier step.
+    makeFile "not a directory" aaa-1.0.0 $source
+    proc ui_warn {args} {lappend ::warnings [join $args]}
+    set ::warnings [list]
+} -body {
+    set failed [rust::restore_published $vendor $source {aaa-1.0.0 bbb-2.0.0}]
+    list \
+        $failed \
+        [file isdirectory [file join $source bbb-2.0.0]] \
+        [llength $::warnings] \
+        [expr {[string first "aaa-1.0.0" [lindex $::warnings 0]] >= 0}]
+} -cleanup {
+    rename ui_warn {}
+    unset -nocomplain ::warnings
+    file delete -force -- $vendor $source
+} -result {aaa-1.0.0 1 1 1}
+
 test vendor-switch-gives-up-when-an-unpublishable-crate-has-an-ambiguous-name {
     A crate that could not be published is reached through a `paths` override, and cargo matches
     an override by package name alone. If the port's graph holds two versions of that name the
@@ -710,7 +773,7 @@ test vendor-switch-gives-up-when-an-unpublishable-crate-has-an-ambiguous-name {
         $::warned \
         [lsort [lmap p [glob -nocomplain -directory $source_dir -types d -- *] {file tail $p}]] \
         [expr {[string first "directory = \"[file join $rustcache vendor]\"" $text] >= 0}] \
-        [file exists [file join $source_dir serde-1.0.0 lib.rs]]
+        [lmap n {serde-1.0.0 syn-2.0.48} {file exists [file join $source_dir $n lib.rs]}]
 } -cleanup {
     foreach c {option tbool compwrap::wrap_compiler ui_debug ui_warn} {rename $c {}}
     foreach v {cargo.home cargo.crates cargo.crates_github cargo.vendor_shared cargo.update
@@ -720,7 +783,7 @@ test vendor-switch-gives-up-when-an-unpublishable-crate-has-an-ambiguous-name {
     }
     set ::rust::pristine_signatures [dict create]
     file delete -force -- $rustcache $workpath
-} -result {1 {serde-1.0.0 syn-1.0.109 syn-2.0.48} 0 1}
+} -result {1 {serde-1.0.0 syn-1.0.109 syn-2.0.48} 0 {1 1}}
 
 set failed $::tcltest::numTests(Failed)
 cleanupTests
